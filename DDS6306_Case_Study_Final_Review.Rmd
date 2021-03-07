@@ -1,0 +1,330 @@
+---
+title: "Case Study 1 DDS 6306"
+author: "Cameron Stewart and Adam Alidra"
+date: "3/5/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+#### Craft Beer and Brewery Report for CEO and CFO of Budweiser: 
+
+#### In this report, you will find our team's analysis and response to the seven questions requested from Budweiser and our team's additional insights based on the Beers and Breweries datasets. The initial investigation is a state level study of Brewery count, median ABV, and median IBU. Looking deeper at the key beer characteristics, our team examined the distribution of ABV, the relationship between ABV vs. IBU, and noted extreme values. 
+
+#### Utilizing the relationship between ABV and IBU, our team deployed machine learning techniques (KNN and Naive Bayes) to predict the beer style. The first model predicts IPA vs. Other Ales and the second model classifies each beer to a generalized list of beer styles. For each analysis, NA's will be addressed when applicable.
+
+## Load the required libraries, read in the data, and adjust variables to the correct type
+
+```{r}
+library(naniar)
+library(stringr)
+library(class)
+library(caret)
+library(e1071)
+library(plyr)
+library(dplyr)
+library(ggthemes)
+library(tidyverse)
+
+##Read in beers.csv and convert variables to the appropriate class. Also change the 'Name' column to be more specific due to conflict in the other dataset
+# Beers.csv Variables:
+# 
+#   Name: Name of the beer.
+# 
+#   Beer_ID: Unique identifier of the beer.
+# 
+#   ABV: Alcohol by volume of the beer.
+# 
+#   IBU: International Bitterness Units of the beer.
+# 
+#   Brewery_ID: Brewery id associated with the beer.
+# 
+#   Style: Style of the beer.
+# 
+#   Ounces: Ounces of beer.
+
+beers = read.csv('/Users/adalidra/Desktop/Data Science Program/DS6306/MSDS_6306_Doing-Data-Science/Unit 8 and 9 Case Study 1/Beers.csv',header = TRUE)
+
+colnames(beers)[1]="Beer_Name"
+beers$Beer_ID = as.factor(beers$Beer_ID)
+beers$Brewery_id = as.factor(beers$Brewery_id)
+beers$Style = as.factor(beers$Style)
+str(beers)
+
+##Read in breweries.csv and convert variables to the appropriate class. Also change the 'Name' column to be more specific due to conflict with the other dataset
+# Breweries.csv Variables:
+# 
+#   Brew_ID: Unique identifier of the brewery.
+# 
+#   Name: Name of the brewery.
+# 
+#   City: City where the brewery is located.
+# 
+#   State: U.S. State where the brewery is located.
+
+breweries = read.csv('/Users/adalidra/Desktop/Data Science Program/DS6306/MSDS_6306_Doing-Data-Science/Unit 8 and 9 Case Study 1/Breweries.csv',header = TRUE)
+colnames(breweries)[2] = "Brewery_Name"
+breweries$Brew_ID = as.factor(breweries$Brew_ID)
+breweries$City = as.factor(breweries$City)
+breweries$State = as.factor(breweries$State)
+str(breweries)
+```
+
+## Find the count of Breweries located in each state
+
+```{r}
+#Create breweries_by_state to store summarized data of Count of Breweries by State
+breweries_by_state = data.frame(breweries %>% group_by(State) %>% summarise(Count = n()) %>% arrange(desc(Count)))
+breweries_by_state
+
+##Display Count of Breweries by State
+
+#For readability displaying first 25 and last 26 on the same y-scale
+
+head(breweries_by_state,25) %>% ggplot(aes(x=reorder(State,-Count),y=Count))+geom_bar(stat = 'identity',color='skyblue',fill='steelblue') + xlab("State") + ylab("Count of Breweries") + ggtitle("Count of Breweries per State","Top 25 States") + theme(axis.text.x=element_text(angle=45, hjust=1)) + scale_y_continuous(breaks = seq(0,50,10),limits = c(0,50))
+
+tail(breweries_by_state,26) %>% ggplot(aes(x=reorder(State,-Count),y=Count))+geom_bar(stat = 'identity',color='skyblue',fill='steelblue') + xlab("State") + ylab("Count of Breweries") + ggtitle("Count of Breweries per State","Bottom 26 States") + theme(axis.text.x=element_text(angle=45, hjust=1)) + scale_y_continuous(breaks = seq(0,50,10),limits = c(0,50))
+
+#Full 51 states in one plot with small text
+head(breweries_by_state, 51) %>% ggplot(aes(x=reorder(State,-Count),y=Count))+geom_bar(stat = 'identity',color='skyblue',fill='steelblue') + xlab("State") + ylab("Count of Breweries") + ggtitle("Count of Breweries per State", "50 States and DC") + theme(axis.text.x=element_text(size= 7, angle=45, hjust=1))
+```
+
+#### 558 Total Breweries listed in the Breweries data set. Top 25% of states contain over 60% of the Breweries. CO and CA have the most Breweries in total.
+
+## Merge the beer data with the breweries data. Printing the first 6 observations and the last 6 observations to check the merged file.
+
+```{r}
+#Merge the two data sets into beers_merge on Brewery_id and Brew_ID
+beers_merge=merge(beers,breweries,by.x = "Brewery_id", by.y = "Brew_ID")
+str(beers_merge)
+
+#Display first and last 6 values in merged data set
+head(beers_merge,6)
+tail(beers_merge,6)
+```
+
+## Address the NA values
+
+```{r}
+#Summarize NA for each variable in all three data frames. Then visualize the merged dataframe NAs
+miss_var_cumsum(beers)
+miss_var_cumsum(breweries)
+miss_var_cumsum(beers_merge)
+gg_miss_var(beers_merge) + ggtitle("Missing Values per Variable in Merged Dataset") + theme(axis.text.x=element_text(size= 12))
+sum(!complete.cases(beers_merge))
+```
+
+#### The breweries data frame has no NA values but the beers data frame has 1067 NA values. When the two tables are merged together, the 1067 NA values from the beers data frame are transferred to the beers_merge data frame. There are 1005 NA values in IBU and 62 NA values in ABV. There are 1005 rows with at least one NA. When we are analyzing a single column (e.g. ABV), we will use all non-NA values in that column. When we analyze multiple variables simultaneously (e.g. ABV and IBU), we will only use rows with no NAs in any of the variables of interest.
+
+## Compute the median ABV and IBU for each state. Plot a bar chart to compare
+
+```{r}
+#Create summarized data in ABV_IBU_by_state frame with ABV and IBU medians by state
+ABV_IBU_by_state = data.frame(beers_merge %>% group_by(State) %>% summarise(median_ABV = median(ABV,na.rm = TRUE), median_IBU = median(IBU,na.rm = TRUE)))
+
+##Plot Median ABV by State
+
+#Re-order the factors for median_ABV so the bar chart can be plotted in descending order
+ABV_IBU_by_state$State= fct_reorder(ABV_IBU_by_state$State, desc(ABV_IBU_by_state$median_ABV))
+
+#Arrange the data frame where median_ABV is in descending order so that the data frame can be sliced
+ABV_IBU_by_state = ABV_IBU_by_state %>% arrange(desc(median_ABV))
+
+#For readability displaying first 25 and last 26 on the same y-scale
+head(ABV_IBU_by_state,25) %>% ggplot(aes(x=State,y=median_ABV)) + geom_bar(stat = 'identity',color='skyblue',fill='steelblue') + xlab("State") + ylab("Median ABV") + ggtitle("Median ABV by State","Top 25 States") + theme(axis.text.x=element_text(size= 10, angle=45, hjust=1)) + scale_y_continuous(breaks = seq(0,0.07,0.01),limits = c(0,0.065))
+
+tail(ABV_IBU_by_state,26) %>% ggplot(aes(x=State,y=median_ABV)) + geom_bar(stat = 'identity',color='skyblue',fill='steelblue') + xlab("State") + ylab("Median ABV") + ggtitle("Median ABV by State","Bottom 26 States") + theme(axis.text.x=element_text(size= 10, angle=45, hjust=1)) + scale_y_continuous(breaks = seq(0,0.06,0.01),limits = c(0,0.065))
+
+#Plot all 51 states at once
+ABV_IBU_by_state %>% ggplot(aes(x=State,y=median_ABV)) + geom_bar(stat = 'identity',color='skyblue',fill='steelblue') + xlab("State") + ylab("Median ABV") + ggtitle("Median ABV by State","Top 25 States") + theme(axis.text.x=element_text(size= 7, angle=45, hjust=1)) + scale_y_continuous(breaks = seq(0,0.07,0.01),limits = c(0,0.065))
+
+##Plot Median IBU by State
+
+#Re-order the factors for median_ABV so the bar chart can be plotted in descending order
+ABV_IBU_by_state$State= fct_reorder(ABV_IBU_by_state$State, desc(ABV_IBU_by_state$median_IBU))
+
+#Arrange the data frame where median_ABV is in descending order so that the data frame can be sliced
+ABV_IBU_by_state = ABV_IBU_by_state %>% arrange(desc(median_IBU))
+
+#For readability displaying first 25 and last 26 on the same y-scale
+head(ABV_IBU_by_state,25) %>% ggplot(aes(x=State,y=median_IBU)) + geom_bar(stat = 'identity',color='skyblue',fill='steelblue') + xlab("State") + ylab("Median IBU") + ggtitle("Median IBU by State","Top 25 States") + theme(axis.text.x=element_text(size= 10, angle=45, hjust=1)) + scale_y_continuous(breaks = seq(0,65,10),limits = c(0,62))
+
+tail(ABV_IBU_by_state,26) %>% ggplot(aes(x=State,y=median_IBU)) + geom_bar(stat = 'identity',color='skyblue',fill='steelblue') + xlab("State") + ylab("Median IBU") + ggtitle("Median IBU by State","Bottom 26 States") + theme(axis.text.x=element_text(size= 10, angle=45, hjust=1)) + scale_y_continuous(breaks = seq(0,65,10),limits = c(0,62))
+
+#Plot all 51 states at once
+ABV_IBU_by_state %>% ggplot(aes(x=State,y=median_IBU)) + geom_bar(stat = 'identity',color='skyblue',fill='steelblue') + xlab("State") + ylab("Median IBU") + ggtitle("Median IBU by State","Bottom 26 States") + theme(axis.text.x=element_text(size= 7, angle=45, hjust=1)) + scale_y_continuous(breaks = seq(0,65,10),limits = c(0,62))
+```
+
+#### When looking at Median ABV by State: DC and KY are tied for the highest ABV at 6.25%, UT has the lowest median ABV by a significant margin at 4.00%, and 84% of states have a median ABV between 5% - 6% (inclusive). (Note: Only removed values are rows with NA in ABV column)
+
+#### When looking at Median IBU by State: ME has the highest median IBU, WI has the lowest median IBU, and SD has no IBU data in the provided data sets (shown without bar in chart). (Note: Only removed values are rows with NA in IBU column)
+
+
+## Find the state with the maximum alcoholic (ABV) beer and the most bitter (IBU) beer
+
+```{r}
+#Max ABV beer
+beers_merge[which(beers_merge$ABV==max(beers_merge$ABV,na.rm = TRUE)),]
+#Max IBU beer
+beers_merge[which(beers_merge$IBU==max(beers_merge$IBU,na.rm = TRUE)),]
+```
+
+#### The highest ABV beer is Lee Hill Series Vol. 5 - Belgian Style Quadrupel Ale. The highest IBU beer is Bitter Bitch Imperial IPA.
+
+## Analyze the summary statistics and distribution of the ABV variable.
+
+```{r}
+#Show the summary of the ABV Variable
+summary(beers_merge$ABV)
+#Display a box plot of ABV
+beers_merge %>% ggplot() + geom_boxplot(aes(x=ABV,y="All Beers"), color='skyblue', fill='steelblue') + ggtitle("Distribution of ABV amongst all beers") + coord_flip() + theme(axis.text.x=element_text(size= 10, angle=45, hjust=1))
+```
+
+#### The distribution of ABV is slightly right skewed which signifies higher dispersion in ABV in Q3 and Q4. Median ABV amongst all analyzed beers is 5.6%. There are significantly more outliers at the higher end of ABV than the lower end. There is a small subset of ABV outliers in top quartile hovering at or just below 10% ABV. (Note: Only removed values are rows with NA in ABV column)
+
+
+## Determine if there is an apparent relationship between the bitterness of the beer and its alcoholic content. Display a scatter plot.
+
+```{r}
+#Plot scatter plot with linear trend line
+beers_merge %>% ggplot(aes(x=ABV,y=IBU)) + geom_point() + geom_smooth(method = "lm") + ggtitle("Relation between ABV to IBU")+ theme(axis.text.x=element_text(size= 10, angle=45, hjust=1))
+#Display the linear model summary to evaluate the linear relationship
+summary(lm(IBU~ABV,data = beers_merge))
+```
+
+#### There is strong evidence to suggest ABV and IBU have a linear relationship (p-value < 0.0001). As ABV increases (x-axis), the IBU value (y-axis) also tends to increase showing a moderate positive linear relationship (R = 0.67). 45% of the variability in IBU can be explained by ABV (R-sqared = 0.4497).
+
+## Compare and contrast the correlation between IBU and ABV between IPAs and other types of Ale beers using KNN classification
+
+```{r}
+##Before KNN, we need to clear out NAs from ABV, IBU, and Style. After diving into Style, we found 3 blanks that were not listed as NA. Blank values are not a useful prediction category. We need to clean the data set to only display complete rows with no NAs or blanks in these columns.
+
+#Convert all blanks in beers_merge to NA
+beers_merge[beers_merge==""]=NA 
+
+#Check dim of beers_merge and check how many rows without NA's
+dim(beers_merge)
+sum(complete.cases(beers_merge))
+#Remove incomplete cases
+beers_merge_clean= na.omit(beers_merge)
+
+#Reset row names after cleaning
+row.names(beers_merge_clean) = 1:dim(beers_merge_clean)[1]
+
+#Reset factor levels of Style (because NA/blanks were removed)
+beers_merge_clean$Style=factor(beers_merge_clean$Style)
+
+#Filter dataset into beers_merge_ale to include only Ales
+beers_merge_ale= beers_merge_clean[grep(x= beers_merge_clean$Style, pattern = '(\\bIPA\\b|\\bAle\\b)', ignore.case= TRUE), ]
+
+#Create IPA_or_Other_Ale column to distinguish between IPA and non-IPA beers and divide the data between IPA and non-IPA Ale
+beers_merge_ale$IPA_or_Other_Ale= beers_merge_ale$Style
+beers_merge_ale$IPA_or_Other_Ale= as.character(beers_merge_ale$IPA_or_Other_Ale)
+beers_merge_ale$IPA_or_Other_Ale[grepl(x= beers_merge_ale$IPA_or_Other_Ale, pattern='(\\bIPA\\b)',ignore.case=TRUE)]= "IPA"
+beers_merge_ale$IPA_or_Other_Ale[grep(x= beers_merge_ale$IPA_or_Other_Ale, pattern= '(\\bAle\\b)',ignore.case=TRUE)]="Other Ale"
+beers_merge_ale$IPA_or_Other_Ale=factor(beers_merge_ale$IPA_or_Other_Ale)
+
+#Standardize values of input variables and store as new columns (Z_ABV and Z_IBU)
+beers_merge_ale$Z_ABV= scale(beers_merge_ale$ABV)
+beers_merge_ale$Z_IBU= scale(beers_merge_ale$IBU)
+
+#Use KNN internal cross validation (running multiple samples due to potential ties). Input columns are Z_ABV and Z_IBU. Output column is IPA_or_Other_Ale
+train_cols= beers_merge_ale[,12:13]
+outcome_data= beers_merge_ale[,11]
+num_rand_samples= 15
+max_k= 55
+accuracy_matrix= matrix(nrow= num_rand_samples, ncol=max_k)
+for(i in 1:num_rand_samples)
+{
+  set.seed(i)
+  
+  for(j in 1:max_k)
+  {
+    class_data= knn.cv(train_cols,cl = outcome_data, k=j)
+    CM= confusionMatrix(table(class_data,outcome_data))
+    accuracy_matrix[i,j]= CM$overall[1]
+  }
+}
+MeanAcc = colMeans(accuracy_matrix)
+which(MeanAcc==max(MeanAcc))
+max(MeanAcc)
+plot(seq(1,max_k,1),MeanAcc, type = "l", main= "KNN Classification of Beer Type based on ABV & IBU", xlab= "k Value", ylab= "Mean Accuracy")
+```
+
+#### The KNN internal leave-one-out cross validation uses a standardized ABV and IBU to predict if the beer is an IPA or Other non-IPA Ale. All non-Ale beers were removed from the data leaving 944 beers. The KNN model was tested 15 times for every k from 1 to 55. k represents the number of closest points used to predict the category. The ideal k value for this model is 23. The mean accuracy of the model at k=23 is 86.86%. This means that 86.86% of the time the model correctly predicted the category of IPA or Other non-IPA Ale based on the ABV and IBU. This model is 1.74 times more accurate than a random classification guess which would be 50% accurate. (Note: Removed rows with NA or Blank values in ABV, IBU, or Style Variables) 
+
+## Use Naive Bayes to classify common beer styles based on ABV and IBU
+
+```{r}
+##Review count of beers by style to determine generalized categories to use (uncomment code below to see the list)
+#data.frame(beers_merge_clean %>% group_by(Style) %>% summarise(Count = n(), ABV_median=median(ABV), IBU_median=median(IBU)) %>% arrange(desc(Count)))
+
+#Create beers_merge_simplified_style for Naive Bayes analysis (copy of beers_merge_clean). Create new column called 'type' which will be used to store generalized beer categories
+beers_merge_simplified_style = beers_merge_clean
+beers_merge_simplified_style$type = beers_merge_simplified_style$Style
+
+#Change type column to character vector and use grep() to use keywords to create generalized beer categories
+beers_merge_simplified_style$type = as.character(beers_merge_simplified_style$type)
+
+beers_merge_simplified_style$type[grepl(x = beers_merge_simplified_style$type,pattern = '(\\bIPA\\b)',ignore.case = TRUE)]="IPA "
+
+beers_merge_simplified_style$type[grepl(x = beers_merge_simplified_style$type,pattern = '(\\bLager\\b)',ignore.case = TRUE)]="Lager "
+
+beers_merge_simplified_style$type[grep(x = beers_merge_simplified_style$type,pattern = '(\\bRed Ale\\b|\\bAmber Ale\\b)',ignore.case = TRUE)]="Red_or_Amber_Ale "
+
+beers_merge_simplified_style$type[grep(x = beers_merge_simplified_style$type,pattern = '(\\bPale\\b)',ignore.case = TRUE)]="Pale Ale "
+
+beers_merge_simplified_style$type[grep(x = beers_merge_simplified_style$type,pattern = '(\\bStout\\b)',ignore.case = TRUE)]="Stout "
+
+beers_merge_simplified_style$type[grep(x = beers_merge_simplified_style$type,pattern = '(\\bPilsner\\b|\\bPilsener\\b)',ignore.case = TRUE)]="Pilsner "
+
+beers_merge_simplified_style$type[grep(x = beers_merge_simplified_style$type,pattern = '(\\bBlonde\\b)',ignore.case = TRUE)]="Blonde Ale "
+
+beers_merge_simplified_style$type[grep(x = beers_merge_simplified_style$type,pattern = '(\\bAle$)',ignore.case = TRUE)]="Other Ale "
+
+beers_merge_simplified_style$type[grep(x = beers_merge_simplified_style$type,pattern = '(\\S)$',ignore.case = TRUE)]="Other Non-Ale Beer "
+
+#Visualize scatter plot of type column by IBU and ABV (Use facet_wrap as well by type)
+beers_merge_simplified_style  %>% ggplot(aes(x=ABV,y=IBU)) + geom_point(aes(color=type)) + geom_smooth(method = "lm") + facet_wrap(~type) + ggtitle("Plot of ABV and IBU of All Beers") + theme(axis.text.x=element_text(size= 10, angle=45, hjust=1))
+beers_merge_simplified_style %>% ggplot(aes(x=ABV,y=IBU)) + geom_point(aes(color=type)) + geom_smooth(method = "lm") + ggtitle("Plot of ABV and IBU of All Beers") + theme(axis.text.x=element_text(size= 10, angle=45, hjust=1))
+
+## Use NB to determine probability of correct beer classification based on IBU and ABV values. Use a 70/30 split on training set vs test set. Re-run the model on 50 seeds to ensure accuracy.
+beers_merge_simplified_style$type= factor(beers_merge_simplified_style$type)
+iterations= 50
+masterAcc=matrix(nrow= iterations)
+masterSens=matrix(nrow=iterations)
+masterSpec=matrix(nrow=iterations)
+splitPerc= .7 #training/test split percentage
+for(j in 1:iterations)
+{
+  set.seed(j)
+  trainIndices= sample(1:dim(beers_merge_simplified_style)[1],round(splitPerc*dim(beers_merge_simplified_style)[1]))
+  train= beers_merge_simplified_style[trainIndices,]
+  test=beers_merge_simplified_style[-trainIndices,]
+  
+  train_columns_split_model= train[,4:5]
+  test_columns= test[,4:5]
+  
+  model= naiveBayes(train_columns_split_model, train$type)
+  CM= confusionMatrix(table(predict(model,test_columns), test$type))
+  masterAcc[j]=CM$overall[1]
+  masterSens[j]=CM$byClass[1]
+  masterSpec[j]=CM$byClass[2]
+}
+MeanAcc=colMeans(masterAcc)
+MeanSens=colMeans(masterSens)
+MeanSpec= colMeans(masterSpec)
+MeanAcc
+MeanSens
+MeanSpec
+```
+
+#### The Naive Bayes model uses ABV and IBU to predict which of the 9 generalized beer types the beer falls in to (based on the generalized types manually created). The model evaluates 1403 beers which includes beers that were not evaluated in the kNN analysis and includes more specific categorization than the knn analysis. We ran the model 50 times at a 70%/30% training/test split. The mean accuracy of the 50 iterations is 45.00%. This means the model predicted the generalized type of beer 45% of the time based on the ABV and IBU. This model is 4.05 times more accurate than a random classification guess which would be 11.11% accurate. For the Naive Bayes model, the mean sensitivity is 61.69% and the mean specificity is 86.47%. (Note: Removed rows with NA or Blank values in ABV, IBU, or Style Variables) 
+
+#### Our team cleaned the data of NA values and provided clear visuals of ABV and IBU Medians at a state level. Looking deeper, our team identified a linear relationship between ABV and IBU. Leveraging this relationship, we were able to build two machine learning models to predict the style of Beer. The first used KNN to look at IPA vs Other Ales. The second used Naive Bayes to look at higher level beer types. KNN offered an accurate prediction method for this high level view of Ales. Naive Bayes offered a more granular approach while offering moderate accuracy. This analysis offers insights into the ABV and IBU ranges customers expect based on the style of beer. Also, the machine learning models can be implemented immediately while future data collection could further refine the model.
